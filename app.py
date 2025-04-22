@@ -86,14 +86,39 @@ else:
             st.error(f"Erro ao gerar previsu00e3o: {e}")
             st.info("Tente outro modelo ou categoria de dados.")
 
-# Checkbox para mostrar a tabela de previsu00f5es
+# Checkbox para mostrar a tabela de previsões
 show_forecast_table = st.checkbox("Mostrar Tabela de Previsões")
-if show_forecast_table and st.session_state.forecast_df is not None:
-    # Formatar a tabela de previsu00f5es
-    st.dataframe(st.session_state.forecast_df.style.format({
-        "ds": lambda x: x.strftime("%Y-%m-%d"),
-        "yhat": format_currency,
-        "yhat_lower": format_currency,
-        "yhat_upper": format_currency
+if show_forecast_table and st.session_state.forecasts_dict is not None:
+    # Verificar se há modelos com previsões
+    modelos_com_previsoes = [modelo for modelo, df in st.session_state.forecasts_dict.items() if len(df) > 0]
+    
+    if modelos_com_previsoes:  # Verificar se a lista não está vazia
+        # Criar tabs para cada modelo
+        modelo_tabs = st.tabs(modelos_com_previsoes)
+        
+        for i, (modelo, tab) in enumerate(zip(modelos_com_previsoes, modelo_tabs)):
+            with tab:
+                forecast_df = st.session_state.forecasts_dict[modelo]
+                if len(forecast_df) > 0:
+                    # Formatar a tabela de previsões
+                    st.dataframe(forecast_df.style.format({
+                        "ds": lambda x: x.strftime("%Y-%m-%d"),
+                        "yhat": format_currency,
+                        "yhat_lower": format_currency,
+                        "yhat_upper": format_currency
+                    }))
+                else:
+                    st.info(f"Previsões disponíveis para o modelo {modelo}.")
+    else:
+        st.info("Não há previsões disponíveis. Tente gerar previsões primeiro.")
+
+# Módulo para mostrar métricas de avaliação
+st.header("Métricas de Avaliação dos Modelos")
+if st.session_state.metrics_df is not None:
+    # Formatar a tabela de métricas
+    st.dataframe(st.session_state.metrics_df.style.format({
+        "RMSE": lambda x: f"{x:.2f}",
+        "MAE": lambda x: f"{x:.2f}",
+        "MAPE": lambda x: f"{x:.2f}%" if not pd.isna(x) else "N/A"
     }))
 
