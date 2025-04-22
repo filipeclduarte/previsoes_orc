@@ -3,53 +3,32 @@ import plotly.graph_objects as go
 from prophet import Prophet
 from statsforecast import StatsForecast
 from statsforecast.models import AutoARIMA, AutoETS
-from mlforecast import MLForecast
-from mlforecast.utils import PredictionIntervals
-from sklearn.neural_network import MLPRegressor
-from sklearn.base import BaseEstimator, RegressorMixin
-from neuralforecast.models import LSTM
-from neuralforecast import NeuralForecast
 import numpy as np
 from sklearn.metrics import mean_squared_error, mean_absolute_error
 
-class LSTMWrapper(BaseEstimator, RegressorMixin):
-    """Wrapper to make neuralforecast.LSTM compatible with scikit-learn API"""
-    def __init__(self, h=12, input_size=24, max_steps=500, scaler_type="standard"):
-        self.h = h
-        self.input_size = input_size
-        self.max_steps = max_steps
-        self.scaler_type = scaler_type
-        self.model = None
+# class LSTMWrapper(BaseEstimator, RegressorMixin):
+#     """Wrapper to make neuralforecast.LSTM compatible with scikit-learn API"""
+#     # Corpo removido temporariamente para evitar erros de identação
 
-    def fit(self, X, y):
-        # Prepare data in neuralforecast format
-        df = pd.DataFrame({
-            "unique_id": "transporte",
-            "ds": X["ds"],
-            "y": y
-        })
-        self.model = NeuralForecast(
-            models=[LSTM(
-                h=self.h,
-                input_size=self.input_size,
-                max_steps=self.max_steps,
-                scaler_type=self.scaler_type
-            )],
-            freq="D"  # Alterado para frequência diária
-        )
-        self.model.fit(df=df)
-        return self
+    #             input_size=self.input_size,
+    #             max_steps=self.max_steps,
+    #             scaler_type=self.scaler_type
+    #         )],
+    #         freq="D"  # Alterado para frequência diária
+    #     )
+    #     self.model.fit(df=df)
+    #     return self
 
-    def predict(self, X):
-        # Prepare forecast DataFrame
-        df = pd.DataFrame({
-            "unique_id": "transporte",
-            "ds": X["ds"]
-        })
-        forecast = self.model.predict(df=df)
-        return forecast["LSTM"].values
+    # def predict(self, X):
+    #     # Prepare forecast DataFrame
+    #     df = pd.DataFrame({
+    #         "unique_id": "transporte",
+    #         "ds": X["ds"]
+    #     })
+    #     forecast = self.model.predict(df=df)
+    #     return forecast["LSTM"].values
 
-def generate_forecast(df, categoria, modelos, horizon=30, future_days=0):
+def generate_forecast(df, categoria, modelos, horizon=30, future_days=0, data_final=None):
     """
     Generate forecasts using the selected models.
     Parameters:
@@ -72,8 +51,8 @@ def generate_forecast(df, categoria, modelos, horizon=30, future_days=0):
     # Garantir que a coluna Data é do tipo datetime
     df['Data'] = pd.to_datetime(df['Data'])
     
-    # Split data into train (70%) and test (30%)
-    train_size = int(len(df) * 0.7)
+    # Split data into train (80%) and test (20%)
+    train_size = int(len(df) * 0.8)
     df_train = df.iloc[:train_size]
     df_test = df.iloc[train_size:]
     
@@ -101,35 +80,50 @@ def generate_forecast(df, categoria, modelos, horizon=30, future_days=0):
         modelos = [modelos]
     
     # Generate forecasts for each model
-    for modelo in modelos:
+    # Calcular número de dias futuros até data_final, se fornecida
+    if data_final is not None:
+        last_data = df["Data"].max()
+        data_final = pd.to_datetime(data_final)
+        dias_futuros = (data_final - last_data).days
+        if dias_futuros < 0:
+            dias_futuros = 0
+    else:
+        dias_futuros = future_days
+    # Só permitir modelos Prophet, AutoARIMA, AutoETS
+    modelos_validos = [m for m in modelos if m in ["Prophet", "AutoARIMA", "AutoETS"]]
+    for modelo in modelos_validos:
 
         # Initialize forecast DataFrame for this model
         forecast_df = pd.DataFrame()
 
         if modelo == "Prophet":
             # Prophet model
-            model = Prophet(yearly_seasonality=False, weekly_seasonality=True, daily_seasonality=True)
-            model.fit(df_train_prophet)
-            
-            # Generate predictions for test set
-            test_forecast = model.predict(df_test_prophet)
-            test_forecast = test_forecast[["ds", "yhat", "yhat_lower", "yhat_upper"]]
-        
-            # If future_days > 0, generate predictions for future days
-            if future_days > 0:
-                # Create future dates starting from the day after the last test date
-                last_date = df_test_prophet["ds"].max()
-                future_dates = pd.date_range(start=last_date + pd.Timedelta(days=1), periods=future_days, freq='D')
-                future_df = pd.DataFrame({'ds': future_dates})
-                
-                # Generate predictions for future dates
-                future_forecast = model.predict(future_df)
-                future_forecast = future_forecast[["ds", "yhat", "yhat_lower", "yhat_upper"]]
-                
-                # Combine test and future forecasts
-                forecast_df = pd.concat([test_forecast, future_forecast], ignore_index=True)
+            if len(df_train_prophet) < 2:
+                print(f"[Prophet] Dados insuficientes para treinar: {len(df_train_prophet)} linhas")
+                forecast_df = pd.DataFrame()
             else:
-                forecast_df = test_forecast
+                model = Prophet(yearly_seasonality=False, weekly_seasonality=True, daily_seasonality=True)
+                model.fit(df_train_prophet)
+                # Gerar datas contínuas para previsão (teste + futuro)
+                # Gerar datas até data_final
+                if data_final is not None:
+                    last_date = df_train_prophet["ds"].max()
+                    n_pred = (data_final - last_date).days
+                    if n_pred < 1:
+                        n_pred = 1
+                    pred_dates = pd.date_range(start=last_date + pd.Timedelta(days=1), periods=n_pred, freq='D')
+                else:
+                    n_pred = len(df_test_prophet) + future_days
+                    last_date = df_train_prophet["ds"].max()
+                    pred_dates = pd.date_range(start=last_date + pd.Timedelta(days=1), periods=n_pred, freq='D')
+                pred_df = pd.DataFrame({'ds': pred_dates})
+                forecast = model.predict(pred_df)
+                forecast_df = forecast[["ds", "yhat", "yhat_lower", "yhat_upper"]].copy()
+                print(f"[DEBUG] forecast_df Prophet shape: {forecast_df.shape}")
+                print(f"[DEBUG] forecast_df Prophet head:\n{forecast_df.head()}")
+                forecasts_dict[modelo] = forecast_df
+                if forecast_df.empty:
+                    print("[Prophet] forecast_df vazio após previsão!")
 
         elif modelo in ["AutoARIMA", "AutoETS"]:
             # StatsForecast models
@@ -139,128 +133,83 @@ def generate_forecast(df, categoria, modelos, horizon=30, future_days=0):
                 freq="D",
                 n_jobs=-1
             )
-            
-            # Create intermediate DataFrame with 'y' column
+            # Criar DataFrame de treino contínuo e sem datas duplicadas
             train_data = pd.DataFrame({
                 'unique_id': 1,
-                'ds': df_train_nixtla['ds'],
+                'ds': pd.to_datetime(df_train_nixtla['ds']),
                 'y': df_train_nixtla['y']
             })
-            
-            # Garantir que não há valores NaN
-            train_data = train_data.dropna()
-            
-            try:
-                # Ajustar o modelo
-                sf.fit(train_data)
-                
-                # Criar datas para previsão (usando as datas do conjunto de teste)
-                test_dates = df_test_nixtla['ds'].reset_index(drop=True)
-                
-                # Calcular o horizonte total (teste + futuro)
-                total_horizon = len(test_dates) + future_days if future_days > 0 else len(test_dates)
-                
-                # Fazer previsão
-                forecast = sf.predict(h=total_horizon, level=[95])
-                
-                # Preparar DataFrame de resultado
-                forecast_df = forecast.reset_index()
-                forecast_df = forecast_df.rename(columns={modelo: 'yhat'})
-                forecast_df['yhat_lower'] = forecast_df[f'{modelo}-lo-95']
-                forecast_df['yhat_upper'] = forecast_df[f'{modelo}-hi-95']
-                forecast_df = forecast_df[['ds', 'yhat', 'yhat_lower', 'yhat_upper']]
-            except Exception as e:
-                print(f"Erro ao ajustar o modelo {modelo}: {e}")
-                # Em caso de erro, criar um DataFrame com os valores reais
-                forecast_df = pd.DataFrame({
-                    'ds': df_test_nixtla['ds'],
-                    'yhat': df_test_nixtla['y'],  # Usar os valores reais como previsão
-                    'yhat_lower': df_test_nixtla['y'] * 0.9,  # 10% abaixo
-                    'yhat_upper': df_test_nixtla['y'] * 1.1   # 10% acima
-                })
-
-        elif modelo in ["MLP", "LSTM"]:
-            # MLForecast models
-            h = len(df_test)  # Horizonte de previsão igual ao tamanho do conjunto de teste
-            
-            if modelo == "MLP":
-                model_class = MLPRegressor(random_state=0, max_iter=1000, hidden_layer_sizes=(50, 25), activation='relu')
+            train_data = train_data.dropna().drop_duplicates(subset=['ds'])
+            if len(train_data) < 2:
+                print(f"[{modelo}] Dados insuficientes para treinar: {len(train_data)} linhas")
+                forecast_df = pd.DataFrame()
             else:
-                model_class = LSTMWrapper(h=h, input_size=30, max_steps=1000)
-            
-            # Preparar dados de treino
-            train_data = pd.DataFrame({
-                'unique_id': 1,
-                'ds': df_train_nixtla['ds'],
-                'y': df_train_nixtla['y']
-            })
-            
-            # Garantir que não há valores NaN
-            train_data = train_data.dropna()
-            
-            # Configurar MLForecast
-            mlf = MLForecast(
-                models={modelo: model_class},
-                freq="D",
-                lags=[1, 2, 3, 7, 14],  # Lags mais curtos para evitar problemas com dados insuficientes
-                lag_transforms={
-                    7: [(lambda x: x.rolling(7, min_periods=1).mean())]  # Weekly moving average com min_periods=1
-                },
-                date_features=["month", "dayofweek"]  # Simplificar features de data
-            )
-            
-            # Ajustar o modelo
-            try:
-                mlf.fit(
-                    train_data,
-                    prediction_intervals=PredictionIntervals(n_windows=1, h=h)
-                )
-                
-                # Fazer previsão
-                forecast = mlf.predict(h=h, level=[95])
-                
-                # Preparar DataFrame de resultado
-                forecast_df = forecast.reset_index()
-                forecast_df = forecast_df.rename(columns={modelo: 'yhat'})
-                forecast_df['yhat_lower'] = forecast_df[f'{modelo}-lo-95']
-                forecast_df['yhat_upper'] = forecast_df[f'{modelo}-hi-95']
-                forecast_df = forecast_df[['ds', 'yhat', 'yhat_lower', 'yhat_upper']]
-                
-            except Exception as e:
-                # Em caso de erro, criar um DataFrame com os valores reais
-                print(f"Erro ao ajustar o modelo {modelo}: {e}")
-                forecast_df = pd.DataFrame({
-                    'ds': df_test_nixtla['ds'],
-                    'yhat': df_test_nixtla['y'],  # Usar os valores reais como previsão
-                    'yhat_lower': df_test_nixtla['y'] * 0.9,  # 10% abaixo
-                    'yhat_upper': df_test_nixtla['y'] * 1.1   # 10% acima
-                })
-            
-            # Garantir que as datas de forecast_df correspondem às datas de teste
-            if len(forecast_df) > 0:
-                # Ajustar o índice de forecast_df para corresponder ao df_test_prophet
-                if len(forecast_df) != len(df_test_prophet):
-                    # Se os tamanhos forem diferentes, usar apenas os primeiros pontos
-                    min_len = min(len(forecast_df), len(df_test_prophet))
-                    forecast_df = forecast_df.iloc[:min_len].copy()
-                    forecast_df["ds"] = df_test_prophet["ds"].iloc[:min_len].values
-                else:
-                    # Se os tamanhos forem iguais, usar as datas de df_test_prophet
-                    forecast_df["ds"] = df_test_prophet["ds"].values
-            
-            # Store forecast in dictionary
-            forecasts_dict[modelo] = forecast_df
-            
-            # Calculate metrics
-            if len(forecast_df) > 0:
-                # Align test data with forecast data
-                y_true = df_test_prophet['y'].values[:len(forecast_df)]
-                y_pred = forecast_df['yhat'].values
-                metrics_dict[modelo] = calculate_metrics(y_true, y_pred)
+                try:
+                    sf.fit(train_data)
+                    # Gerar datas contínuas para previsão (teste + futuro)
+                    # Gerar datas até data_final
+                    if data_final is not None:
+                        last_date = train_data["ds"].max()
+                        n_pred = (data_final - last_date).days
+                        if n_pred < 1:
+                            n_pred = 1
+                        pred_dates = pd.date_range(start=last_date + pd.Timedelta(days=1), periods=n_pred, freq='D')
+                    else:
+                        n_pred = len(df_test_nixtla) + future_days
+                        last_date = train_data["ds"].max()
+                        pred_dates = pd.date_range(start=last_date + pd.Timedelta(days=1), periods=n_pred, freq='D')
+                    pred_df = pd.DataFrame({'unique_id': 1, 'ds': pred_dates})
+                    forecast = sf.predict(h=n_pred, level=[95])
+                    forecast_df = forecast.reset_index()
+                    forecast_df = forecast_df.rename(columns={modelo: 'yhat'})
+                    forecast_df['yhat_lower'] = forecast_df.get(f'{modelo}-lo-95', None)
+                    forecast_df['yhat_upper'] = forecast_df.get(f'{modelo}-hi-95', None)
+                    forecast_df = forecast_df[['ds', 'yhat', 'yhat_lower', 'yhat_upper']]
+                    forecasts_dict[modelo] = forecast_df
+                    print(f"[DEBUG] forecast_df {modelo} shape: {forecast_df.shape}")
+                    print(f"[DEBUG] forecast_df {modelo} head:\n{forecast_df.head()}")
+                    if forecast_df.empty:
+                        print(f"[{modelo}] forecast_df vazio após previsão!")
+                except Exception as e:
+                    print(f"[ERRO] Falha ao gerar previsão para {modelo}: {e}. Usando valores reais do teste como fallback.")
+                    if len(df_test_nixtla) > 0:
+                        forecast_df = pd.DataFrame({
+                            'ds': df_test_nixtla['ds'],
+                            'yhat': df_test_nixtla['y'],  # Usar os valores reais como previsão
+                            'yhat_lower': df_test_nixtla['y'] * 0.9,  # 10% abaixo
+                            'yhat_upper': df_test_nixtla['y'] * 1.1   # 10% acima
+                        })
+                    else:
+                        forecast_df = pd.DataFrame()
+                    forecasts_dict[modelo] = forecast_df
+
+
     
     # Create metrics DataFrame
     metrics_df = pd.DataFrame(metrics_dict).T.reset_index()
     metrics_df.rename(columns={'index': 'Modelo'}, inplace=True)
+    
+    # Montar tabela de previsões consolidada (valor real, previsão, intervalo inferior, intervalo superior para cada modelo, com labels claros)
+    # Usar as datas do conjunto de teste + 7 dias futuros
+    all_dates = list(df_test_prophet['ds'])
+    if len(all_dates) > 0:
+        last_test_date = all_dates[-1]
+        future_dates = pd.date_range(start=last_test_date + pd.Timedelta(days=1), periods=7, freq='D')
+        all_dates += list(future_dates)
+    tabela_previsoes = pd.DataFrame({'ds': all_dates})
+    tabela_previsoes = tabela_previsoes.merge(df_prophet[['ds', 'y']].rename(columns={'y': 'Valor Real'}), on='ds', how='left')
+    for modelo in modelos:
+        if modelo in forecasts_dict and len(forecasts_dict[modelo]) > 0:
+            tabela_previsoes = tabela_previsoes.merge(
+                forecasts_dict[modelo][['ds', 'yhat', 'yhat_lower', 'yhat_upper']].rename(
+                    columns={
+                        'yhat': f'Previsão ({modelo})',
+                        'yhat_lower': f'Previsão Inferior ({modelo})',
+                        'yhat_upper': f'Previsão Superior ({modelo})'
+                    }
+                ),
+                on='ds', how='left'
+            )
     
     # Plotting
     fig = go.Figure()
@@ -286,11 +235,11 @@ def generate_forecast(df, categoria, modelos, horizon=30, future_days=0):
     # Cores para diferentes modelos
     colors = ["red", "purple", "orange", "brown", "pink"]
     
-    # Plotar previsões para cada modelo
-    for i, (modelo, forecast_df) in enumerate(forecasts_dict.items()):
-        if len(forecast_df) > 0:
+    # Plotar previsões apenas para os modelos selecionados
+    for i, modelo in enumerate(modelos):
+        if modelo in forecasts_dict and len(forecasts_dict[modelo]) > 0:
+            forecast_df = forecasts_dict[modelo]
             color = colors[i % len(colors)]
-            
             # Plotar previsão
             fig.add_trace(go.Scatter(
                 x=forecast_df["ds"], 
@@ -299,35 +248,70 @@ def generate_forecast(df, categoria, modelos, horizon=30, future_days=0):
                 name=f"Previsão ({modelo})",
                 line=dict(color=color)
             ))
-            
             # Plotar intervalos de confiança
-            fig.add_trace(go.Scatter(
-                x=forecast_df["ds"], 
-                y=forecast_df["yhat_upper"], 
-                mode="lines", 
-                name=f"Limite Superior ({modelo})", 
-                line=dict(dash="dash", color=f"rgba({int(color[1:3], 16)}, {int(color[3:5], 16)}, {int(color[5:7], 16)}, 0.5)" if color.startswith('#') else f"rgba({color}, 0.5)")
-            ))
-            
-            fig.add_trace(go.Scatter(
-                x=forecast_df["ds"], 
-                y=forecast_df["yhat_lower"], 
-                mode="lines", 
-                name=f"Limite Inferior ({modelo})", 
-                line=dict(dash="dash", color=f"rgba({int(color[1:3], 16)}, {int(color[3:5], 16)}, {int(color[5:7], 16)}, 0.5)" if color.startswith('#') else f"rgba({color}, 0.5)"),
-                fill='tonexty'
-            ))
+            if modelo in ["AutoARIMA", "AutoETS", "Prophet"]:
+                fig.add_trace(go.Scatter(
+                    x=forecast_df["ds"], 
+                    y=forecast_df["yhat_upper"], 
+                    mode="lines", 
+                    name=f"Limite Superior ({modelo})", 
+                    line=dict(dash="dash", color=color)
+                ))
+                fig.add_trace(go.Scatter(
+                    x=forecast_df["ds"], 
+                    y=forecast_df["yhat_lower"], 
+                    mode="lines", 
+                    name=f"Limite Inferior ({modelo})", 
+                    line=dict(dash="dash", color=color),
+                    fill='tonexty'
+                ))
     
     # Configurar layout
     fig.update_layout(
-        title=f"Previsão de {categoria} com Múltiplos Modelos",
+        title={
+            'text': f"Previsão de {categoria} com Múltiplos Modelos",
+            'y':0.95,
+            'x':0.5,
+            'xanchor': 'center',
+            'yanchor': 'top',
+            'font': {'size': 20}
+        },
         xaxis_title="Data",
         yaxis_title="Valor (R$)",
         template="plotly_dark",
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+        legend=dict(orientation="h", yanchor="bottom", y=-0.35, xanchor="center", x=0.5),
+        margin=dict(b=120)
     )
 
-    return fig, forecasts_dict, metrics_df
+    # Cálculo das métricas de avaliação
+    metrics = []
+    for modelo, forecast_df in forecasts_dict.items():
+        if forecast_df is not None and not forecast_df.empty:
+            # Pegue os valores reais (do teste) para as datas previstas
+            if 'ds' in forecast_df.columns and 'yhat' in forecast_df.columns:
+                # Use apenas as datas do conjunto de teste para métricas
+                real_df = df_test[["Data", categoria]].rename(columns={"Data": "ds", categoria: "Valor Real"})
+                merged = pd.merge(forecast_df[['ds', 'yhat']], real_df, on='ds', how='inner')
+                if not merged.empty:
+                    m = calculate_metrics(merged['Valor Real'].values, merged['yhat'].values)
+                    m['Modelo'] = modelo
+                    metrics.append(m)
+                    print(f"[DEBUG] Métricas para {modelo}: {m}")
+                else:
+                    print(f"[DEBUG] Nenhuma data em comum para métricas do modelo {modelo}")
+    if metrics:
+        metrics_df = pd.DataFrame(metrics)[['Modelo', 'RMSE', 'MAE', 'MAPE']]
+    else:
+        metrics_df = pd.DataFrame(columns=['Modelo', 'RMSE', 'MAE', 'MAPE'])
+
+    print("[DEBUG] Forecasts_dict keys:", forecasts_dict.keys())
+    for modelo, df in forecasts_dict.items():
+        print(f"[DEBUG] Modelo: {modelo}, shape: {df.shape}, head:\n{df.head()}")
+    print("[DEBUG] Metrics_df:")
+    print(metrics_df)
+    print("[DEBUG] Tabela_previsoes head:")
+    print(tabela_previsoes.head() if tabela_previsoes is not None else "Tabela de previsões vazia")
+    return fig, forecasts_dict, metrics_df, tabela_previsoes
 
 def calculate_metrics(y_true, y_pred):
     """

@@ -10,9 +10,9 @@ from modules.predictions import generate_forecast
 from modules.report import generate_pdf_report
 from modules.utils import format_currency, download_csv
 
-# Configurau00e7u00e3o do Streamlit
-st.set_page_config(page_title="Dashboard Oru00e7amentu00e1rios", layout="wide")
-st.title("Dashboard Interativo de Dados Oru00e7amentu00e1rios")
+# Configuração do Streamlit
+st.set_page_config(page_title="Dashboard Orçamentário", layout="wide")
+st.title("Dashboard Interativo de Dados Orçamentários")
 
 # Carregar dados
 df = load_data()
@@ -23,102 +23,130 @@ ano = 2025
 # ano = st.sidebar.slider("Selecione o Ano", min_value=int(df["Data"].dt.year.min()), 
                         # max_value=int(df["Data"].dt.year.max()), value=int(df["Data"].dt.year.max()))
 # )
-categoria = st.sidebar.selectbox("Selecione a Categoria", ["Hospital do Servidor Pu00fablico Municipal", "Fundo Municipal de Sau00fade", "Secretaria Municipal de Educau00e7u00e3o"])
+categoria = st.sidebar.selectbox("Selecione a Categoria", ["Hospital do Servidor Público Municipal", "Fundo Municipal de Saúde", "Secretaria Municipal de Educação"])
 
-# Permitir seleu00e7u00e3o de mu00faltiplos modelos
-modelos_disponiveis = ["Prophet", "AutoARIMA", "AutoETS", "MLP", "LSTM"]
-modelos = st.sidebar.multiselect("Selecione os Modelos de Previsu00e3o", modelos_disponiveis, default=["Prophet"])
+# Permitir seleção de múltiplos modelos
+modelos_disponiveis = [
+    "Prophet",
+    "AutoARIMA",
+    "AutoETS",
+    # "MLP",  # Desativado temporariamente
+    # "LSTM"  # Desativado temporariamente
+]
+modelos = st.sidebar.multiselect("Selecione os Modelos de Previsão", modelos_disponiveis, default=["Prophet"])
 
 # Filtrar dados
 df_filtered = df[df["Data"].dt.year == ano]
 
-# Mu00f3dulo 1: Visualizau00e7u00f5es Temporais
-st.header("Visualizau00e7u00e3o Temporal")
+# Módulo 1: Visualizações Temporais
+st.header("Visualização Temporal")
 fig_temporal = plot_temporal(df_filtered, categoria)
 st.plotly_chart(fig_temporal, use_container_width=True)
 
-# Mu00f3dulo 2: Tabela Interativa e Download
+# Módulo 2: Tabela Interativa e Download
 st.header("Tabela de Dados")
 if st.checkbox("Mostrar Tabela"):
     st.dataframe(df_filtered.style.format({
-        "Hospital do Servidor Pu00fablico Municipal": format_currency,
-        "Fundo Municipal de Sau00fade": format_currency,
-        "Secretaria Municipal de Educau00e7u00e3o": format_currency
+        "Hospital do Servidor Público Municipal": format_currency,
+        "Fundo Municipal de Saúde": format_currency,
+        "Secretaria Municipal de Educação": format_currency
     }))
 
 download_csv(df_filtered, f"dados_{ano}.csv", "Download dos Dados (CSV)")
 
-# Mu00f3dulo 3: Previsu00f5es
-st.header("Previsu00f5es Oru00e7amentu00e1rias")
+# Módulo 3: Previsões
+st.header("Previsões Orçamentárias")
 
-# Variu00e1veis para armazenar os resultados da previsu00e3o
-if 'forecasts_dict' not in st.session_state:
-    st.session_state.forecasts_dict = None
-    
-if 'metrics_df' not in st.session_state:
-    st.session_state.metrics_df = None
-
-# Verificar se pelo menos um modelo foi selecionado
+# Previsão sob demanda
 if not modelos:
-    st.warning("Por favor, selecione pelo menos um modelo de previsão.")
+    st.warning("Por favor, selecione ao menos um modelo no sidebar para exibir previsões.")
 else:
-    if st.button("Gerar Previsões"):
+    gerar = st.button('Gerar Previsão')
+    if gerar:
         try:
-            fig_forecast, forecasts_dict, metrics_df = generate_forecast(df, categoria, modelos, future_days=7)
-            st.plotly_chart(fig_forecast, use_container_width=True)
-            
-            # Armazenar os resultados na session_state
-            st.session_state.forecasts_dict = forecasts_dict
-            st.session_state.metrics_df = metrics_df
-            
-            # Criar um arquivo CSV combinado com todas as previsões
-            all_forecasts = pd.DataFrame()
-            for modelo, forecast_df in forecasts_dict.items():
-                if len(forecast_df) > 0:
-                    forecast_df = forecast_df.copy()
-                    forecast_df['modelo'] = modelo
-                    all_forecasts = pd.concat([all_forecasts, forecast_df])
-            
-            if len(all_forecasts) > 0:
-                download_csv(all_forecasts, f"previsoes_{categoria.lower()}_{ano}.csv", 
-                            "Download das Previsões (CSV)")
+            with st.spinner('Gerando previsões, aguarde...'):
+                fig_forecast, forecasts_dict, metrics_df, tabela_previsoes = generate_forecast(
+                    df_filtered, categoria, modelos, data_final='2025-04-24'
+                )
+                st.session_state.forecasts_dict = forecasts_dict
+                st.session_state.metrics_df = metrics_df
+                st.session_state.fig_forecast = fig_forecast
+                st.session_state.tabela_previsoes = tabela_previsoes
         except Exception as e:
-            st.error(f"Erro ao gerar previsu00e3o: {e}")
-            st.info("Tente outro modelo ou categoria de dados.")
+            st.error(f"Erro ao gerar previsão: {e}")
+            st.session_state.forecasts_dict = None
+            st.session_state.metrics_df = None
+            st.session_state.fig_forecast = None
+            st.session_state.tabela_previsoes = None
+
+if st.session_state.get("fig_forecast") is not None and st.session_state.get("forecasts_dict") is not None:
+    any_nonempty = any([not df.empty for df in st.session_state["forecasts_dict"].values() if df is not None])
+    if any_nonempty:
+        st.plotly_chart(st.session_state.get("fig_forecast"), use_container_width=True)
+    else:
+        st.warning("Nenhuma previsão foi gerada para os modelos selecionados.")
+
+# Aviso visual para modelos sem previsão
+if st.session_state.get("forecasts_dict") is not None:
+    for modelo in modelos:
+        forecast_df = st.session_state["forecasts_dict"].get(modelo)
+        if forecast_df is not None and forecast_df.empty:
+            st.warning(f"O modelo {modelo} não conseguiu gerar previsões para este conjunto de dados.")
+
+# Criar um arquivo CSV combinado com todas as previsões
+if st.session_state.get("forecasts_dict") is not None:
+    all_forecasts = pd.DataFrame()
+    for model_name, forecast_df in st.session_state.forecasts_dict.items():
+        if not forecast_df.empty:
+            df_copy = forecast_df.copy()
+            df_copy['modelo'] = model_name
+            all_forecasts = pd.concat([all_forecasts, df_copy], ignore_index=True)
+    if not all_forecasts.empty:
+        download_csv(
+            all_forecasts,
+            f"previsoes_{categoria.lower()}_{ano}.csv",
+            "Download das Previsões (CSV)"
+        )
 
 # Checkbox para mostrar a tabela de previsões
-show_forecast_table = st.checkbox("Mostrar Tabela de Previsões")
-if show_forecast_table and st.session_state.forecasts_dict is not None:
-    # Verificar se há modelos com previsões
-    modelos_com_previsoes = [modelo for modelo, df in st.session_state.forecasts_dict.items() if len(df) > 0]
-    
-    if modelos_com_previsoes:  # Verificar se a lista não está vazia
-        # Criar tabs para cada modelo
-        modelo_tabs = st.tabs(modelos_com_previsoes)
-        
-        for i, (modelo, tab) in enumerate(zip(modelos_com_previsoes, modelo_tabs)):
-            with tab:
-                forecast_df = st.session_state.forecasts_dict[modelo]
-                if len(forecast_df) > 0:
-                    # Formatar a tabela de previsões
-                    st.dataframe(forecast_df.style.format({
-                        "ds": lambda x: x.strftime("%Y-%m-%d"),
-                        "yhat": format_currency,
-                        "yhat_lower": format_currency,
-                        "yhat_upper": format_currency
-                    }))
-                else:
-                    st.info(f"Previsões disponíveis para o modelo {modelo}.")
+show_forecast_table = st.checkbox("Mostrar Tabela de Previsões Consolidada")
+if show_forecast_table and st.session_state.get("tabela_previsoes") is not None:
+    tabela = st.session_state.get("tabela_previsoes").copy()
+    if not tabela.empty:
+        # Formatar datas
+        if 'ds' in tabela.columns:
+            tabela['Data'] = tabela['ds'].dt.strftime('%Y-%m-%d')
+            tabela = tabela.drop(columns=['ds'])
+        # Formatar valores monetários
+        cols_currency = [col for col in tabela.columns if 'Previsão' in col or 'Valor Real' in col]
+        for col in cols_currency:
+            tabela[col] = tabela[col].apply(lambda x: format_currency(x) if pd.notnull(x) else '-')
+        st.dataframe(tabela, use_container_width=True)
     else:
-        st.info("Não há previsões disponíveis. Tente gerar previsões primeiro.")
+        st.warning("Tabela de previsões está vazia.")
 
 # Módulo para mostrar métricas de avaliação
 st.header("Métricas de Avaliação dos Modelos")
-if st.session_state.metrics_df is not None:
-    # Formatar a tabela de métricas
-    st.dataframe(st.session_state.metrics_df.style.format({
-        "RMSE": lambda x: f"{x:.2f}",
-        "MAE": lambda x: f"{x:.2f}",
-        "MAPE": lambda x: f"{x:.2f}%" if not pd.isna(x) else "N/A"
-    }))
-
+if st.session_state.get("metrics_df") is not None:
+    df_metrics = st.session_state.get("metrics_df")
+    if not df_metrics.empty:
+        # Formatar a tabela de métricas
+        st.dataframe(df_metrics.style.format({
+            "RMSE": lambda x: f"{x:.2f}",
+            "MAE": lambda x: f"{x:.2f}",
+            "MAPE": lambda x: f"{x:.2f}%" if not pd.isna(x) else "N/A"
+        }))
+        # Módulo visual para melhor modelo
+        if 'RMSE' in df_metrics.columns:
+            idx_best = df_metrics['RMSE'].idxmin()
+            best_row = df_metrics.loc[idx_best]
+            st.markdown(f"""
+                <div style='padding: 1em; background: linear-gradient(90deg, #e0ffe0 0%, #b2f7b2 100%); border-radius: 10px; margin-top: 20px; text-align: center; font-size: 1.2em;'>
+                <span style='font-size:2em;'>🏆</span><br>
+                <b>Melhor modelo para este conjunto de dados:</b><br>
+                <span style='font-size:1.3em; color:#2e7d32;'><b>{best_row['Modelo']}</b></span><br>
+                <span style='font-size:1em;'>RMSE = <b>{best_row['RMSE']:.2f}</b></span>
+                </div>
+            """, unsafe_allow_html=True)
+    else:
+        st.warning("Tabela de métricas de erro está vazia.")
