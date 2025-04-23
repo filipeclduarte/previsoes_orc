@@ -11,6 +11,38 @@ from modules.utils import format_currency, download_csv
 
 # Configuração do Streamlit
 st.set_page_config(page_title="Dashboard Orçamentário", layout="wide")
+
+# CSS customizado para responsividade mobile
+def local_css(css):
+    st.markdown(f'<style>{css}</style>', unsafe_allow_html=True)
+
+responsive_css = '''
+@media (max-width: 600px) {
+    .block-container {
+        padding-left: 0.5rem !important;
+        padding-right: 0.5rem !important;
+    }
+    .css-18e3th9, .css-1d391kg { /* Main container */
+        padding: 0 !important;
+    }
+    h1, h2, h3, h4, h5, h6 {
+        font-size: 1.1em !important;
+    }
+    button, .stButton>button {
+        font-size: 1em !important;
+        padding: 0.4em 0.6em !important;
+    }
+    .stSidebar {
+        width: 80vw !important;
+        min-width: 120px !important;
+    }
+    .stDataFrame, .stTable {
+        font-size: 0.8em !important;
+    }
+}
+'''
+local_css(responsive_css)
+
 st.title("Dashboard Interativo de Dados Orçamentários")
 
 # Carregar dados
