@@ -5,6 +5,11 @@ from statsforecast import StatsForecast
 from statsforecast.models import AutoARIMA, AutoETS
 import numpy as np
 from sklearn.metrics import mean_squared_error, mean_absolute_error
+from sklearn.neural_network import MLPRegressor
+from sklearn.svm import SVR
+from sklearn.model_selection import GridSearchCV
+from sklearn.preprocessing import StandardScaler
+from sklearn.pipeline import Pipeline
 
 # class LSTMWrapper(BaseEstimator, RegressorMixin):
 #     """Wrapper to make neuralforecast.LSTM compatible with scikit-learn API"""
@@ -89,102 +94,325 @@ def generate_forecast(df, categoria, modelos, horizon=30, future_days=0, data_fi
             dias_futuros = 0
     else:
         dias_futuros = future_days
-    # Só permitir modelos Prophet, AutoARIMA, AutoETS
-    modelos_validos = [m for m in modelos if m in ["Prophet", "AutoARIMA", "AutoETS"]]
+    # Permitir modelos Prophet, AutoARIMA, AutoETS, MLP, SVR
+    modelos_validos = [m for m in modelos if m in ["Prophet", "AutoARIMA", "AutoETS", "MLP", "SVR"]]
     for modelo in modelos_validos:
 
         # Initialize forecast DataFrame for this model
         forecast_df = pd.DataFrame()
 
-        if modelo == "Prophet":
-            # Prophet model
-            if len(df_train_prophet) < 2:
-                print(f"[Prophet] Dados insuficientes para treinar: {len(df_train_prophet)} linhas")
-                forecast_df = pd.DataFrame()
-            else:
-                model = Prophet(yearly_seasonality=False, weekly_seasonality=True, daily_seasonality=True)
-                model.fit(df_train_prophet)
-                # Gerar datas contínuas para previsão (teste + futuro)
-                # Gerar datas até data_final
-                if data_final is not None:
-                    last_date = df_train_prophet["ds"].max()
+        if modelo == "Prophet":            # Prophet model
+            y_pred_test = np.array([])
+            try:
+                if len(df_train_prophet) < 2:
+                    print(f"[Prophet] Dados insuficientes para treinar: {len(df_train_prophet)} linhas")
+                    forecast_df = pd.DataFrame()
+                else:
+                    model = Prophet()
+                    model.fit(df_train_prophet)
+                    # Previsão para teste + futuros
+                    future_dates = df_test_prophet[['ds']].copy()
+                    if dias_futuros > 0:
+                        last_date = df["Data"].max()
+                        future_extra = pd.date_range(start=last_date + pd.Timedelta(days=1), periods=dias_futuros)
+                        future_dates = pd.concat([future_dates, pd.DataFrame({'ds': future_extra})], ignore_index=True)
+                    forecast = model.predict(future_dates)
+                    forecast_df = pd.DataFrame({
+                        'ds': forecast['ds'],
+                        'yhat': forecast['yhat'],
+                        'yhat_lower': forecast['yhat_lower'],
+                        'yhat_upper': forecast['yhat_upper']
+                    })
+                    y_pred_test = forecast_df.loc[forecast_df['ds'].isin(df_test_prophet['ds']), 'yhat'].values
+                    forecasts_dict[modelo] = forecast_df
+            except Exception as e:
+                print(f"[ERRO] Falha na previsão recursiva para {modelo}: {e}")
+                forecasts_dict[modelo] = pd.DataFrame()
+
+        elif modelo == "MLP":
+            y_pred_test = np.array([])
+            # MLPRegressor com GridSearchCV
+            X_train = np.arange(len(df_train)).reshape(-1, 1)
+            y_train = df_train[categoria].values
+            X_test = np.arange(len(df_train), len(df_train) + len(df_test)).reshape(-1, 1)
+            pipeline = Pipeline([
+                ("scaler", StandardScaler()),
+                ("mlp", MLPRegressor(max_iter=2000, random_state=42))
+            ])
+            param_grid = {
+                "mlp__hidden_layer_sizes": [(50,), (100,), (50, 50)],
+                "mlp__activation": ["relu", "tanh"],
+                "mlp__alpha": [0.0001, 0.001, 0.01]
+            }
+            gs = GridSearchCV(pipeline, param_grid, cv=3, n_jobs=-1)
+            gs.fit(X_train, y_train)
+            print(f"[DEBUG] Melhor params MLP: {gs.best_params_}")
+            # Previsão para teste
+            y_pred_test = gs.predict(X_test)
+            forecast_df = pd.DataFrame({
+                "ds": df_test["Data"].values,
+                "yhat": y_pred_test
+            })
+            # Previsão recursiva até data_final
+            try:
+                # Conformal prediction para intervalos de previsão (split conformal)
+                if len(df_test) > 0 and len(y_pred_test) == len(df_test[categoria]):
+                    residuos_abs = np.abs(df_test[categoria].values - y_pred_test)
+                    quantil = np.quantile(residuos_abs, 0.95)
+                else:
+                    quantil = np.nan
+                # Para cada previsão (teste e futuro)
+                forecast_df['yhat_lower'] = forecast_df['yhat'] - quantil
+                forecast_df['yhat_upper'] = forecast_df['yhat'] + quantil
+                if dias_futuros > 0:
+                    n_start = len(df_train) + len(df_test)
+                    n_end = n_start + dias_futuros
+                    if n_end > n_start:
+                        X_future = np.arange(n_start, n_end).reshape(-1, 1)
+                        y_pred_future = gs.predict(X_future)
+                        datas_futuras = pd.date_range(start=df["Data"].max() + pd.Timedelta(days=1), periods=dias_futuros)
+                        # Intervalo para previsão futura (usar resíduos do teste)
+                        # lower_future, upper_future = gerar_intervalo(y_pred_future)
+                        # Simulação recursiva com bootstrapped residuals para intervalos futuros
+                        n_boot = 1000
+                        rng = np.random.default_rng(42)
+                        # Calcular resíduos do histórico (treino + validação)
+                        X_all = np.concatenate([X_train, X_test]) if len(X_test) > 0 else X_train
+                        y_all = np.concatenate([y_train, df_test[categoria].values]) if len(df_test) > 0 else y_train
+                        y_pred_all = gs.predict(X_all)
+                        residuos = y_all - y_pred_all if len(y_all) == len(y_pred_all) else y_train - gs.predict(X_train)
+                        # Previsão média (ponto) já está calculada em y_pred_future
+                        # Simular caminhos futuros
+                        sim_paths = np.zeros((n_boot, len(y_pred_future)))
+                        for b in range(n_boot):
+                            y_sim = []
+                            last_value = df["Valor Real"].values[-1] if "Valor Real" in df.columns else df[categoria].values[-1]
+                            for i in range(len(y_pred_future)):
+                                # Para modelos autoregressivos, aqui deveria atualizar os lags
+                                pred = y_pred_future[i]
+                                erro = rng.choice(residuos)
+                                y_next = pred + erro
+                                y_sim.append(y_next)
+                            sim_paths[b, :] = y_sim
+                        lower_future = np.percentile(sim_paths, 2.5, axis=0)
+                        upper_future = np.percentile(sim_paths, 97.5, axis=0)
+                        # Garantir alinhamento de tamanho
+                        min_len = min(len(datas_futuras), len(y_pred_future), len(lower_future), len(upper_future))
+                        forecast_future = pd.DataFrame({
+                            "ds": datas_futuras[:min_len],
+                            "yhat": y_pred_future[:min_len],
+                            "yhat_lower": lower_future[:min_len],
+                            "yhat_upper": upper_future[:min_len]
+                        })
+                        forecast_df = pd.concat([forecast_df, forecast_future], ignore_index=True)
+                        # Para o teste, pode-se usar conformal prediction ou o mesmo método se desejar
+                        # Aqui, para simplificar, mantemos os intervalos do futuro apenas para as datas futuras
+                        forecast_df.loc[forecast_df['ds'].isin(datas_futuras), 'yhat_lower'] = lower_future
+                        forecast_df.loc[forecast_df['ds'].isin(datas_futuras), 'yhat_upper'] = upper_future
+                    else:
+                        forecast_df['yhat_lower'] = np.nan
+                        forecast_df['yhat_upper'] = np.nan
+                else:
+                    forecast_df['yhat_lower'] = np.nan
+                    forecast_df['yhat_upper'] = np.nan
+                forecasts_dict[modelo] = forecast_df
+            except Exception as e:
+                print(f"[ERRO] Falha na previsão recursiva para {modelo}: {e}")
+                forecasts_dict[modelo] = pd.DataFrame()
+        elif modelo == "SVR":
+            y_pred_test = np.array([])
+            # SVR com GridSearchCV
+            X_train = np.arange(len(df_train)).reshape(-1, 1)
+            y_train = df_train[categoria].values
+            X_test = np.arange(len(df_train), len(df_train) + len(df_test)).reshape(-1, 1)
+            pipeline = Pipeline([
+                ("scaler", StandardScaler()),
+                ("svr", SVR())
+            ])
+            param_grid = {
+                "svr__C": [0.1, 1, 10],
+                "svr__gamma": ["scale", "auto"],
+                "svr__kernel": ["rbf", "linear"]
+            }
+            gs = GridSearchCV(pipeline, param_grid, cv=3, n_jobs=-1)
+            gs.fit(X_train, y_train)
+            print(f"[DEBUG] Melhor params SVR: {gs.best_params_}")
+            # Previsão para teste
+            y_pred_test = gs.predict(X_test)
+            forecast_df = pd.DataFrame({
+                "ds": df_test["Data"].values,
+                "yhat": y_pred_test
+            })
+            # Previsão recursiva até data_final
+            try:
+                # Conformal prediction para intervalos de previsão (split conformal)
+                if len(df_test) > 0 and len(y_pred_test) == len(df_test[categoria]):
+                    residuos_abs = np.abs(df_test[categoria].values - y_pred_test)
+                    quantil = np.quantile(residuos_abs, 0.95)
+                else:
+                    quantil = np.nan
+                # Para cada previsão (teste e futuro)
+                forecast_df['yhat_lower'] = forecast_df['yhat'] - quantil
+                forecast_df['yhat_upper'] = forecast_df['yhat'] + quantil
+                if dias_futuros > 0:
+                    n_start = len(df_train) + len(df_test)
+                    n_end = n_start + dias_futuros
+                    if n_end > n_start:
+                        X_future = np.arange(n_start, n_end).reshape(-1, 1)
+                        y_pred_future = gs.predict(X_future)
+                        datas_futuras = pd.date_range(start=df["Data"].max() + pd.Timedelta(days=1), periods=dias_futuros)
+                        # Intervalo para previsão futura (usar resíduos do teste)
+                        # lower_future, upper_future = gerar_intervalo(y_pred_future)
+                        # Simulação recursiva com bootstrapped residuals para intervalos futuros
+                        n_boot = 1000
+                        rng = np.random.default_rng(42)
+                        # Calcular resíduos do histórico (treino + validação)
+                        X_all = np.concatenate([X_train, X_test]) if len(X_test) > 0 else X_train
+                        y_all = np.concatenate([y_train, df_test[categoria].values]) if len(df_test) > 0 else y_train
+                        y_pred_all = gs.predict(X_all)
+                        residuos = y_all - y_pred_all if len(y_all) == len(y_pred_all) else y_train - gs.predict(X_train)
+                        # Previsão média (ponto) já está calculada em y_pred_future
+                        # Simular caminhos futuros
+                        sim_paths = np.zeros((n_boot, len(y_pred_future)))
+                        for b in range(n_boot):
+                            y_sim = []
+                            last_value = df["Valor Real"].values[-1] if "Valor Real" in df.columns else df[categoria].values[-1]
+                            for i in range(len(y_pred_future)):
+                                # Para modelos autoregressivos, aqui deveria atualizar os lags
+                                pred = y_pred_future[i]
+                                erro = rng.choice(residuos)
+                                y_next = pred + erro
+                                y_sim.append(y_next)
+                            sim_paths[b, :] = y_sim
+                        lower_future = np.percentile(sim_paths, 2.5, axis=0)
+                        upper_future = np.percentile(sim_paths, 97.5, axis=0)
+                        # Garantir alinhamento de tamanho
+                        min_len = min(len(datas_futuras), len(y_pred_future), len(lower_future), len(upper_future))
+                        forecast_future = pd.DataFrame({
+                            "ds": datas_futuras[:min_len],
+                            "yhat": y_pred_future[:min_len],
+                            "yhat_lower": lower_future[:min_len],
+                            "yhat_upper": upper_future[:min_len]
+                        })
+                        forecast_df = pd.concat([forecast_df, forecast_future], ignore_index=True)
+                        # Para o teste, pode-se usar conformal prediction ou o mesmo método se desejar
+                        # Aqui, para simplificar, mantemos os intervalos do futuro apenas para as datas futuras
+                        forecast_df.loc[forecast_df['ds'].isin(datas_futuras), 'yhat_lower'] = lower_future
+                        forecast_df.loc[forecast_df['ds'].isin(datas_futuras), 'yhat_upper'] = upper_future
+                    else:
+                        forecast_df['yhat_lower'] = np.nan
+                        forecast_df['yhat_upper'] = np.nan
+                else:
+                    forecast_df['yhat_lower'] = np.nan
+                    forecast_df['yhat_upper'] = np.nan
+                forecasts_dict[modelo] = forecast_df
+            except Exception as e:
+                print(f"[ERRO] Falha na previsão recursiva para {modelo}: {e}")
+                forecasts_dict[modelo] = pd.DataFrame()
+
+        # O bloco else: abaixo foi removido pois não é necessário após SVR/MLP
+
+        elif modelo == "AutoARIMA":
+            print(f"[DEBUG] Entrando no bloco AutoARIMA")
+            y_pred_test = np.array([])
+            try:
+                # Preparar dados para StatsForecast
+                train_data = pd.DataFrame({
+                    'unique_id': 1,
+                    'ds': pd.to_datetime(df_train_nixtla['ds']),
+                    'y': df_train_nixtla['y']
+                })
+                train_data = train_data.dropna().drop_duplicates(subset=['ds'])
+                if len(train_data) < 2:
+                    print(f"[AutoARIMA] Dados insuficientes para treinar: {len(train_data)} linhas")
+                    forecast_df = pd.DataFrame()
+                else:
+                    sf = StatsForecast(
+                        models=[AutoARIMA(season_length=7)],
+                        freq="D",
+                        n_jobs=-1
+                    )
+                    sf.fit(train_data)
+                    data_final = pd.to_datetime("2025-04-24")
+                    last_date = train_data["ds"].max()
                     n_pred = (data_final - last_date).days
                     if n_pred < 1:
                         n_pred = 1
                     pred_dates = pd.date_range(start=last_date + pd.Timedelta(days=1), periods=n_pred, freq='D')
-                else:
-                    n_pred = len(df_test_prophet) + future_days
-                    last_date = df_train_prophet["ds"].max()
-                    pred_dates = pd.date_range(start=last_date + pd.Timedelta(days=1), periods=n_pred, freq='D')
-                pred_df = pd.DataFrame({'ds': pred_dates})
-                forecast = model.predict(pred_df)
-                forecast_df = forecast[["ds", "yhat", "yhat_lower", "yhat_upper"]].copy()
-                print(f"[DEBUG] forecast_df Prophet shape: {forecast_df.shape}")
-                print(f"[DEBUG] forecast_df Prophet head:\n{forecast_df.head()}")
-                forecasts_dict[modelo] = forecast_df
-                if forecast_df.empty:
-                    print("[Prophet] forecast_df vazio após previsão!")
-
-        elif modelo in ["AutoARIMA", "AutoETS"]:
-            # StatsForecast models
-            model_class = AutoARIMA if modelo == "AutoARIMA" else AutoETS
-            sf = StatsForecast(
-                models=[model_class(season_length=7)],  # Weekly seasonality
-                freq="D",
-                n_jobs=-1
-            )
-            # Criar DataFrame de treino contínuo e sem datas duplicadas
-            train_data = pd.DataFrame({
-                'unique_id': 1,
-                'ds': pd.to_datetime(df_train_nixtla['ds']),
-                'y': df_train_nixtla['y']
-            })
-            train_data = train_data.dropna().drop_duplicates(subset=['ds'])
-            if len(train_data) < 2:
-                print(f"[{modelo}] Dados insuficientes para treinar: {len(train_data)} linhas")
-                forecast_df = pd.DataFrame()
-            else:
-                try:
-                    sf.fit(train_data)
-                    # Gerar datas contínuas para previsão (teste + futuro)
-                    # Gerar datas até data_final
-                    if data_final is not None:
-                        last_date = train_data["ds"].max()
-                        n_pred = (data_final - last_date).days
-                        if n_pred < 1:
-                            n_pred = 1
-                        pred_dates = pd.date_range(start=last_date + pd.Timedelta(days=1), periods=n_pred, freq='D')
-                    else:
-                        n_pred = len(df_test_nixtla) + future_days
-                        last_date = train_data["ds"].max()
-                        pred_dates = pd.date_range(start=last_date + pd.Timedelta(days=1), periods=n_pred, freq='D')
                     pred_df = pd.DataFrame({'unique_id': 1, 'ds': pred_dates})
                     forecast = sf.predict(h=n_pred, level=[95])
-                    forecast_df = forecast.reset_index()
-                    forecast_df = forecast_df.rename(columns={modelo: 'yhat'})
-                    forecast_df['yhat_lower'] = forecast_df.get(f'{modelo}-lo-95', None)
-                    forecast_df['yhat_upper'] = forecast_df.get(f'{modelo}-hi-95', None)
+                    print(f"[DEBUG] forecast columns for AutoARIMA: {forecast.columns.tolist()}")
+                    print(f"[DEBUG] forecast head for AutoARIMA:\n{forecast.head()}")
+                    forecast_df = forecast.reset_index(drop=True)
+                    # Extrair coluna de previsão
+                    yhat_col = [col for col in forecast_df.columns if col.lower() in ['autoarima', 'yhat', 'forecast']]
+                    forecast_df['yhat'] = forecast_df[yhat_col[0]] if yhat_col else np.nan
+                    lo_col = [col for col in forecast_df.columns if col.endswith('-lo-95')]
+                    hi_col = [col for col in forecast_df.columns if col.endswith('-hi-95')]
+                    forecast_df['yhat_lower'] = forecast_df[lo_col[0]] if lo_col else np.nan
+                    forecast_df['yhat_upper'] = forecast_df[hi_col[0]] if hi_col else np.nan
                     forecast_df = forecast_df[['ds', 'yhat', 'yhat_lower', 'yhat_upper']]
-                    forecasts_dict[modelo] = forecast_df
-                    print(f"[DEBUG] forecast_df {modelo} shape: {forecast_df.shape}")
-                    print(f"[DEBUG] forecast_df {modelo} head:\n{forecast_df.head()}")
+                    print(f"[DEBUG] forecast_df AutoARIMA shape: {forecast_df.shape}")
+                    print(f"[DEBUG] forecast_df AutoARIMA head:\n{forecast_df.head()}")
+                    print(f"[DEBUG] forecast_df AutoARIMA columns: {forecast_df.columns.tolist()}")
                     if forecast_df.empty:
-                        print(f"[{modelo}] forecast_df vazio após previsão!")
-                except Exception as e:
-                    print(f"[ERRO] Falha ao gerar previsão para {modelo}: {e}. Usando valores reais do teste como fallback.")
-                    if len(df_test_nixtla) > 0:
-                        forecast_df = pd.DataFrame({
-                            'ds': df_test_nixtla['ds'],
-                            'yhat': df_test_nixtla['y'],  # Usar os valores reais como previsão
-                            'yhat_lower': df_test_nixtla['y'] * 0.9,  # 10% abaixo
-                            'yhat_upper': df_test_nixtla['y'] * 1.1   # 10% acima
-                        })
-                    else:
-                        forecast_df = pd.DataFrame()
-                    forecasts_dict[modelo] = forecast_df
+                        print(f"[AutoARIMA] forecast_df vazio após previsão!")
+                    print(f"[DEBUG] Saindo do bloco AutoARIMA")
+            except Exception as e:
+                print(f"[ERRO][EXCEPTION] Falha ao gerar previsão para AutoARIMA: {e}. type={type(e)}")
+                import traceback; traceback.print_exc()
+                forecast_df = pd.DataFrame()
+            forecasts_dict[modelo] = forecast_df
 
+        elif modelo == "AutoETS":
+            print(f"[DEBUG] Entrando no bloco AutoETS")
+            y_pred_test = np.array([])
+            try:
+                train_data = pd.DataFrame({
+                    'unique_id': 1,
+                    'ds': pd.to_datetime(df_train_nixtla['ds']),
+                    'y': df_train_nixtla['y']
+                })
+                train_data = train_data.dropna().drop_duplicates(subset=['ds'])
+                if len(train_data) < 2:
+                    print(f"[AutoETS] Dados insuficientes para treinar: {len(train_data)} linhas")
+                    forecast_df = pd.DataFrame()
+                else:
+                    sf = StatsForecast(
+                        models=[AutoETS(season_length=7)],
+                        freq="D",
+                        n_jobs=-1
+                    )
+                    sf.fit(train_data)
+                    data_final = pd.to_datetime("2025-04-24")
+                    last_date = train_data["ds"].max()
+                    n_pred = (data_final - last_date).days
+                    if n_pred < 1:
+                        n_pred = 1
+                    pred_dates = pd.date_range(start=last_date + pd.Timedelta(days=1), periods=n_pred, freq='D')
+                    pred_df = pd.DataFrame({'unique_id': 1, 'ds': pred_dates})
+                    forecast = sf.predict(h=n_pred, level=[95])
+                    print(f"[DEBUG] forecast columns for AutoETS: {forecast.columns.tolist()}")
+                    print(f"[DEBUG] forecast head for AutoETS:\n{forecast.head()}")
+                    forecast_df = forecast.reset_index(drop=True)
+                    yhat_col = [col for col in forecast_df.columns if col.lower() in ['autoets', 'yhat', 'forecast']]
+                    forecast_df['yhat'] = forecast_df[yhat_col[0]] if yhat_col else np.nan
+                    lo_col = [col for col in forecast_df.columns if col.endswith('-lo-95')]
+                    hi_col = [col for col in forecast_df.columns if col.endswith('-hi-95')]
+                    forecast_df['yhat_lower'] = forecast_df[lo_col[0]] if lo_col else np.nan
+                    forecast_df['yhat_upper'] = forecast_df[hi_col[0]] if hi_col else np.nan
+                    forecast_df = forecast_df[['ds', 'yhat', 'yhat_lower', 'yhat_upper']]
+                    print(f"[DEBUG] forecast_df AutoETS shape: {forecast_df.shape}")
+                    print(f"[DEBUG] forecast_df AutoETS head:\n{forecast_df.head()}")
+                    print(f"[DEBUG] forecast_df AutoETS columns: {forecast_df.columns.tolist()}")
+                    if forecast_df.empty:
+                        print(f"[AutoETS] forecast_df vazio após previsão!")
+                    print(f"[DEBUG] Saindo do bloco AutoETS")
+            except Exception as e:
+                print(f"[ERRO][EXCEPTION] Falha ao gerar previsão para AutoETS: {e}. type={type(e)}")
+                import traceback; traceback.print_exc()
+            forecasts_dict[modelo] = forecast_df
 
-    
     # Create metrics DataFrame
     metrics_df = pd.DataFrame(metrics_dict).T.reset_index()
     metrics_df.rename(columns={'index': 'Modelo'}, inplace=True)
@@ -249,7 +477,7 @@ def generate_forecast(df, categoria, modelos, horizon=30, future_days=0, data_fi
                 line=dict(color=color)
             ))
             # Plotar intervalos de confiança
-            if modelo in ["AutoARIMA", "AutoETS", "Prophet"]:
+            if modelo in ["AutoARIMA", "AutoETS", "Prophet", "MLP", "SVR"]:
                 fig.add_trace(go.Scatter(
                     x=forecast_df["ds"], 
                     y=forecast_df["yhat_upper"], 
@@ -283,7 +511,13 @@ def generate_forecast(df, categoria, modelos, horizon=30, future_days=0, data_fi
         margin=dict(b=120)
     )
 
-    # Cálculo das métricas de avaliação
+    print(f"[DEBUG][GLOBAL] forecasts_dict gerado:")
+    for modelo, forecast_df in forecasts_dict.items():
+        print(f"  Modelo: {modelo}, forecast_df shape: {forecast_df.shape if forecast_df is not None else None}")
+        if forecast_df is not None:
+            print(forecast_df.head())
+
+    # Calcular métricas para cada modelo
     metrics = []
     for modelo, forecast_df in forecasts_dict.items():
         if forecast_df is not None and not forecast_df.empty:
@@ -304,15 +538,15 @@ def generate_forecast(df, categoria, modelos, horizon=30, future_days=0, data_fi
     else:
         metrics_df = pd.DataFrame(columns=['Modelo', 'RMSE', 'MAE', 'MAPE'])
 
-    print("[DEBUG] Forecasts_dict keys:", forecasts_dict.keys())
-    for modelo, df in forecasts_dict.items():
-        print(f"[DEBUG] Modelo: {modelo}, shape: {df.shape}, head:\n{df.head()}")
     print("[DEBUG] Metrics_df:")
     print(metrics_df)
     print("[DEBUG] Tabela_previsoes head:")
     print(tabela_previsoes.head() if tabela_previsoes is not None else "Tabela de previsões vazia")
 
-    # Selecionar o melhor modelo baseado nas métricas
+    print(f"[DEBUG][GLOBAL] metrics_df calculado:\n{metrics_df}")
+    if metrics_df.empty:
+        print("[ERRO][GLOBAL] metrics_df está vazio! Nenhuma previsão foi considerada válida para cálculo de métricas.")
+    # Selecionar melhor modelo
     melhor_modelo, metrics_df_ordenado = selecionar_melhor_modelo(metrics_df)
     print(f"[DEBUG] Melhor modelo: {melhor_modelo}")
     return fig, forecasts_dict, metrics_df, tabela_previsoes, melhor_modelo, metrics_df_ordenado

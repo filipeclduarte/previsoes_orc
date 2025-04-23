@@ -61,7 +61,8 @@ modelos_disponiveis = [
     "Prophet",
     "AutoARIMA",
     "AutoETS",
-    # "MLP",  # Desativado temporariamente
+    "MLP",
+    "SVR",
     # "LSTM"  # Desativado temporariamente
 ]
 modelos = st.sidebar.multiselect("Selecione os Modelos de Previsão", modelos_disponiveis, default=["Prophet"])
