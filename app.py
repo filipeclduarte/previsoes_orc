@@ -5,9 +5,8 @@ import pandas as pd
 st._config.set_option("server.runOnSave", True)
 
 from data.load_data import load_data
-from modules.visualizations import plot_temporal, plot_monthly
+from modules.visualizations import plot_temporal
 from modules.predictions import generate_forecast
-from modules.report import generate_pdf_report
 from modules.utils import format_currency, download_csv
 
 # Configuração do Streamlit
