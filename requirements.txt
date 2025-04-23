@@ -3,9 +3,5 @@ pandas==2.2.3
 plotly==5.24.1
 prophet==1.1.6
 numpy==2.1.2
-reportlab==4.2.5
 statsforecast==1.7.8
-mlforecast==0.13.7
-neuralforecast==1.7.4
 scikit-learn==1.5.2
-torch==2.4.1
