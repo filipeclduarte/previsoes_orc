@@ -311,7 +311,11 @@ def generate_forecast(df, categoria, modelos, horizon=30, future_days=0, data_fi
     print(metrics_df)
     print("[DEBUG] Tabela_previsoes head:")
     print(tabela_previsoes.head() if tabela_previsoes is not None else "Tabela de previsões vazia")
-    return fig, forecasts_dict, metrics_df, tabela_previsoes
+
+    # Selecionar o melhor modelo baseado nas métricas
+    melhor_modelo, metrics_df_ordenado = selecionar_melhor_modelo(metrics_df)
+    print(f"[DEBUG] Melhor modelo: {melhor_modelo}")
+    return fig, forecasts_dict, metrics_df, tabela_previsoes, melhor_modelo, metrics_df_ordenado
 
 def calculate_metrics(y_true, y_pred):
     """
@@ -349,3 +353,17 @@ def calculate_metrics(y_true, y_pred):
         'MAE': mae,
         'MAPE': mape
     }
+
+
+def selecionar_melhor_modelo(metrics_df):
+    """
+    Seleciona o melhor modelo com base nos menores valores normalizados de RMSE, MAE e MAPE.
+    Retorna o nome do melhor modelo e o DataFrame ordenado.
+    """
+    if metrics_df.empty:
+        return None, metrics_df
+    for metrica in ['RMSE', 'MAE', 'MAPE']:
+        metrics_df[metrica + '_norm'] = metrics_df[metrica] / metrics_df[metrica].min()
+    metrics_df['score_total'] = metrics_df[['RMSE_norm', 'MAE_norm', 'MAPE_norm']].sum(axis=1)
+    melhor_modelo = metrics_df.loc[metrics_df['score_total'].idxmin(), 'Modelo']
+    return melhor_modelo, metrics_df.sort_values('score_total')

@@ -64,13 +64,15 @@ else:
     if gerar:
         try:
             with st.spinner('Gerando previsões, aguarde...'):
-                fig_forecast, forecasts_dict, metrics_df, tabela_previsoes = generate_forecast(
+                fig_forecast, forecasts_dict, metrics_df, tabela_previsoes, melhor_modelo, metrics_df_ordenado = generate_forecast(
                     df_filtered, categoria, modelos, data_final='2025-04-24'
                 )
                 st.session_state.forecasts_dict = forecasts_dict
                 st.session_state.metrics_df = metrics_df
                 st.session_state.fig_forecast = fig_forecast
                 st.session_state.tabela_previsoes = tabela_previsoes
+                st.session_state.melhor_modelo = melhor_modelo
+                st.session_state.metrics_df_ordenado = metrics_df_ordenado
         except Exception as e:
             st.error(f"Erro ao gerar previsão: {e}")
             st.session_state.forecasts_dict = None
@@ -135,16 +137,16 @@ if st.session_state.get("metrics_df") is not None:
             "MAE": lambda x: f"{x:.2f}",
             "MAPE": lambda x: f"{x:.2f}%" if not pd.isna(x) else "N/A"
         }))
-        # Módulo visual para melhor modelo
-        if 'RMSE' in df_metrics.columns:
-            idx_best = df_metrics['RMSE'].idxmin()
-            best_row = df_metrics.loc[idx_best]
+        # Módulo visual para melhor modelo (usando score_total)
+        if st.session_state.get("metrics_df_ordenado") is not None:
+            df_ord = st.session_state.metrics_df_ordenado
+            best_row = df_ord.iloc[0]
             st.markdown(f"""
                 <div style='padding: 1em; background: linear-gradient(90deg, #e0ffe0 0%, #b2f7b2 100%); border-radius: 10px; margin-top: 20px; text-align: center; font-size: 1.2em;'>
                 <span style='font-size:2em;'>🏆</span><br>
                 <b>Melhor modelo para este conjunto de dados:</b><br>
                 <span style='font-size:1.3em; color:#2e7d32;'><b>{best_row['Modelo']}</b></span><br>
-                <span style='font-size:1em;'>RMSE = <b>{best_row['RMSE']:.2f}</b></span>
+                <span style='font-size:1em;'>Score Total = <b>{best_row['score_total']:.2f}</b></span>
                 </div>
             """, unsafe_allow_html=True)
     else:
