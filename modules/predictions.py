@@ -140,11 +140,11 @@ def generate_forecast(df, categoria, modelos, horizon=30, future_days=0, data_fi
                 ("mlp", MLPRegressor(max_iter=2000, random_state=42))
             ])
             param_grid = {
-                "mlp__hidden_layer_sizes": [(50,), (100,), (50, 50)],
+                "mlp__hidden_layer_sizes": [(5,), (10,), (15,), (25,), (50,), (5, 5), (10, 10), (15, 15)],
                 "mlp__activation": ["relu", "tanh"],
                 "mlp__alpha": [0.0001, 0.001, 0.01]
             }
-            gs = GridSearchCV(pipeline, param_grid, cv=3, n_jobs=-1)
+            gs = GridSearchCV(pipeline, param_grid, cv=5, n_jobs=-1)
             gs.fit(X_train, y_train)
             print(f"[DEBUG] Melhor params MLP: {gs.best_params_}")
             # Previsão para teste
@@ -232,9 +232,9 @@ def generate_forecast(df, categoria, modelos, horizon=30, future_days=0, data_fi
             param_grid = {
                 "svr__C": [0.1, 1, 10],
                 "svr__gamma": ["scale", "auto"],
-                "svr__kernel": ["rbf", "linear"]
+                "svr__kernel": ["rbf", "linear", "poly", "sigmoid"]
             }
-            gs = GridSearchCV(pipeline, param_grid, cv=3, n_jobs=-1)
+            gs = GridSearchCV(pipeline, param_grid, cv=5, n_jobs=-1)
             gs.fit(X_train, y_train)
             print(f"[DEBUG] Melhor params SVR: {gs.best_params_}")
             # Previsão para teste
@@ -328,7 +328,7 @@ def generate_forecast(df, categoria, modelos, horizon=30, future_days=0, data_fi
                     forecast_df = pd.DataFrame()
                 else:
                     sf = StatsForecast(
-                        models=[AutoARIMA(season_length=7)],
+                        models=[AutoARIMA(season_length=7, max_p=7, max_q=7)],
                         freq="D",
                         n_jobs=-1
                     )
@@ -439,6 +439,18 @@ def generate_forecast(df, categoria, modelos, horizon=30, future_days=0, data_fi
                 on='ds', how='left'
             )
     
+    # --- PÓS-PROCESSAMENTO: ZERAR PREVISÕES NEGATIVAS NOS DATAFRAMES DE forecasts_dict ---
+    for modelo, forecast_df in forecasts_dict.items():
+        if forecast_df is not None and not forecast_df.empty:
+            for col in ['yhat', 'yhat_lower']:
+                if col in forecast_df.columns:
+                    forecast_df[col] = np.maximum(0, forecast_df[col])
+
+    # --- PÓS-PROCESSAMENTO: ZERAR NEGATIVOS NA TABELA DE PREVISÕES ---
+    for col in tabela_previsoes.columns:
+        if col.startswith('Previsão (') or col.startswith('Previsão Inferior ('):
+            tabela_previsoes[col] = np.maximum(0, tabela_previsoes[col])
+
     # Plotting
     fig = go.Figure()
     
@@ -485,13 +497,26 @@ def generate_forecast(df, categoria, modelos, horizon=30, future_days=0, data_fi
                     name=f"Limite Superior ({modelo})", 
                     line=dict(dash="dash", color=color)
                 ))
+                # Definir cor transparente para o preenchimento
+                fill_rgba = color
+                if color == "red":
+                    fill_rgba = "rgba(255,0,0,0.15)"
+                elif color == "purple":
+                    fill_rgba = "rgba(128,0,128,0.15)"
+                elif color == "orange":
+                    fill_rgba = "rgba(255,140,0,0.15)"
+                elif color == "brown":
+                    fill_rgba = "rgba(139,69,19,0.15)"
+                elif color == "pink":
+                    fill_rgba = "rgba(255,105,180,0.15)"
                 fig.add_trace(go.Scatter(
                     x=forecast_df["ds"], 
                     y=forecast_df["yhat_lower"], 
                     mode="lines", 
                     name=f"Limite Inferior ({modelo})", 
                     line=dict(dash="dash", color=color),
-                    fill='tonexty'
+                    fill='tonexty',
+                    fillcolor=fill_rgba
                 ))
     
     # Configurar layout
@@ -516,6 +541,13 @@ def generate_forecast(df, categoria, modelos, horizon=30, future_days=0, data_fi
         print(f"  Modelo: {modelo}, forecast_df shape: {forecast_df.shape if forecast_df is not None else None}")
         if forecast_df is not None:
             print(forecast_df.head())
+
+    # --- PÓS-PROCESSAMENTO: ZERAR PREVISÕES NEGATIVAS ---
+    for modelo, forecast_df in forecasts_dict.items():
+        if forecast_df is not None and not forecast_df.empty:
+            for col in ['yhat', 'yhat_lower']:
+                if col in forecast_df.columns:
+                    forecast_df[col] = np.maximum(0, forecast_df[col])
 
     # Calcular métricas para cada modelo
     metrics = []
