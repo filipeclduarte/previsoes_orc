@@ -10,7 +10,7 @@ from modules.predictions import generate_forecast
 from modules.utils import format_currency, download_csv
 
 # Configuração do Streamlit
-st.set_page_config(page_title="OrçIA", layout="wide")
+st.set_page_config(page_title="OrçAI", layout="wide")
 
 # CSS customizado para responsividade mobile
 def local_css(css):
@@ -43,7 +43,7 @@ responsive_css = '''
 '''
 local_css(responsive_css)
 
-st.title("OrçIA - Dashboard Interativo de Dados Orçamentários")
+st.title("OrçAI - Dashboard Interativo de Dados Orçamentários")
 
 # Carregar dados
 df = load_data()
