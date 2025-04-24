@@ -10,7 +10,7 @@ from modules.predictions import generate_forecast
 from modules.utils import format_currency, download_csv
 
 # Configuração do Streamlit
-st.set_page_config(page_title="Dashboard Orçamentário", layout="wide")
+st.set_page_config(page_title="OrçIA", layout="wide")
 
 # CSS customizado para responsividade mobile
 def local_css(css):
@@ -43,7 +43,7 @@ responsive_css = '''
 '''
 local_css(responsive_css)
 
-st.title("Dashboard Interativo de Dados Orçamentários")
+st.title("OrçIA - Dashboard Interativo de Dados Orçamentários")
 
 # Carregar dados
 df = load_data()
@@ -71,7 +71,7 @@ modelos = st.sidebar.multiselect("Selecione os Modelos de Previsão", modelos_di
 df_filtered = df[df["Data"].dt.year == ano]
 
 # Módulo 1: Visualizações Temporais
-st.header("Visualização Temporal")
+st.header("Receita Orçamentária")
 fig_temporal = plot_temporal(df_filtered, categoria)
 st.plotly_chart(fig_temporal, use_container_width=True)
 
@@ -87,7 +87,7 @@ if st.checkbox("Mostrar Tabela"):
 download_csv(df_filtered, f"dados_{ano}.csv", "Download dos Dados (CSV)")
 
 # Módulo 3: Previsões
-st.header("Previsões Orçamentárias")
+st.header("Previsões de Receita Orçamentária")
 
 # Previsão sob demanda
 if not modelos:
